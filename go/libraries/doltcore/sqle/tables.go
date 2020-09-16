@@ -68,7 +68,7 @@ type DoltTable struct {
 	table  *doltdb.Table
 	sch    schema.Schema
 	sqlSch sql.Schema
-	db     Database
+	db     sql.Database
 }
 
 var _ sql.Table = (*DoltTable)(nil)
@@ -219,6 +219,7 @@ func (t *DoltTable) PartitionRows(ctx *sql.Context, partition sql.Partition) (sq
 // WritableDoltTable allows updating, deleting, and inserting new rows. It implements sql.UpdatableTable and friends.
 type WritableDoltTable struct {
 	DoltTable
+	db Database
 	ed *sqlTableEditor
 }
 
@@ -394,22 +395,16 @@ func (t *AlterableDoltTable) AddColumn(ctx *sql.Context, column *sql.Column, ord
 		return err
 	}
 
-	tag := sqleSchema.ExtractTag(column)
-	if tag == schema.InvalidTag {
-		// generate a tag if we don't have a user-defined tag
-		ti, err := typeinfo.FromSqlType(column.Type)
-		if err != nil {
-			return err
-		}
-
-		tt, err := root.GenerateTagsForNewColumns(ctx, t.name, []string{column.Name}, []types.NomsKind{ti.NomsKind()})
-		if err != nil {
-			return err
-		}
-		tag = tt[0]
+	ti, err := typeinfo.FromSqlType(column.Type)
+	if err != nil {
+		return err
+	}
+	tags, err := root.GenerateTagsForNewColumns(ctx, t.name, []string{column.Name}, []types.NomsKind{ti.NomsKind()})
+	if err != nil {
+		return err
 	}
 
-	col, err := sqleSchema.ToDoltCol(tag, column)
+	col, err := sqleSchema.ToDoltCol(tags[0], column)
 	if err != nil {
 		return err
 	}
@@ -423,7 +418,7 @@ func (t *AlterableDoltTable) AddColumn(ctx *sql.Context, column *sql.Column, ord
 		nullable = alterschema.Null
 	}
 
-	updatedTable, err := alterschema.AddColumnToTable(ctx, root, table, t.name, col.Tag, col.Name, col.TypeInfo, nullable, col.Default, orderToOrder(order))
+	updatedTable, err := alterschema.AddColumnToTable(ctx, root, table, t.name, col.Tag, col.Name, col.TypeInfo, nullable, col.Default, col.Comment, orderToOrder(order))
 	if err != nil {
 		return err
 	}
@@ -519,11 +514,6 @@ func (t *AlterableDoltTable) ModifyColumn(ctx *sql.Context, columnName string, c
 	existingCol, ok := sch.GetAllCols().GetByName(columnName)
 	if !ok {
 		panic(fmt.Sprintf("Column %s not found. This is a bug.", columnName))
-	}
-
-	tag := sqleSchema.ExtractTag(column)
-	if tag != existingCol.Tag && tag != schema.InvalidTag {
-		return errors.New("cannot change the tag of an existing column")
 	}
 
 	col, err := sqleSchema.ToDoltCol(existingCol.Tag, column)
